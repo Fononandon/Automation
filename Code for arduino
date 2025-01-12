@@ -1,0 +1,140 @@
+#include <EEPROM.h> 
+
+// Define configurable values at the top
+const int moisturePin = A0;     
+const int enablePin = 9;        // Speed pin
+const int logicPin1 = 7;        // Logic pin 1, forward or reverse
+const int logicPin2 = 8;        // Logic pin 2, forward or reverse
+
+// Calibration and sensitivity settings
+const int calibrationPeriod = 100;         // Number of readings for initial calibration. 
+const int wateringDuration = 5000;        // How long the pump works
+const float thresholdSensitivity = 0.3;   // Sensitivity for dry/wet threshold (lower = more activity from the plant)
+const int adaptiveAdjustmentRange = 50;    // Change this if your plant has specific requirements
+
+// Parameters for dryness 
+int dryThreshold;       
+int wetThreshold;       
+
+void setup() {   
+  pinMode(enablePin, OUTPUT); // Dont change this   
+  pinMode(logicPin1, OUTPUT);  
+  pinMode(logicPin2, OUTPUT);  
+  digitalWrite(enablePin, LOW);  
+  digitalWrite(logicPin1, LOW); 
+  digitalWrite(logicPin2, LOW);
+  Serial.begin(9600);
+
+  // Read stored thresholds from EEPROM. 
+  wetThreshold = readIntFromEEPROM(2);
+
+  // Perform calibration if EEPROM values are not set 
+  if (dryThreshold == 0xFFFF || wetThreshold == 0xFFFF) { 
+    Serial.println("Calibrating... Please wait.);
+    int calibrationReadings[calibrationPeriod];
+    for (int i = 0; i < calibrationPeriod; i++) {
+      calibrationReadings[i] = analogRead(moisturePin);  // Gather moisture data
+      delay(200);  
+    }
+    calculateInitialThresholds(calibrationReadings);
+    writeIntToEEPROM(0, dryThreshold);  // Saving data to EPROM
+    writeIntToEEPROM(2, wetThreshold);
+    Serial.println("Calibration complete and thresholds saved.");
+  } else {
+    Serial.println("Loaded thresholds from EEPROM.");
+  }
+
+  Serial.print("Dry Threshold: ");
+  Serial.println(dryThreshold);
+  Serial.print("Wet Threshold: ");
+  Serial.println(wetThreshold);
+}
+
+//Moisture sensor process
+
+void loop() {
+  int moistureValue = analogRead(moisturePin); // Read current moisture level.
+  Serial.print("Moisture Level: ");
+  Serial.println(moistureValue);
+
+  // Trigger watering if below middle-ground value
+  int middleGroundValue = (dryThreshold + wetThreshold) / 2;
+  if (moistureValue < middleGroundValue) {
+    activatePump(); // Time to feed the plant
+  } else {
+    deactivatePump(); // No need for water
+  }
+
+  // Optionally adjust thresholds over time. 
+  adjustThresholds(moistureValue);
+
+  delay(2000); //Dont delete this it will break
+}
+
+void calculateInitialThresholds(int readings[]) {
+  int minVal = 1023; 
+  int maxVal = 0;     
+  int sum = 0;        
+
+  // Calculate min, max, and average values.
+  for (int i = 0; i < calibrationPeriod; i++) {
+    int val = readings[i];
+    if (val < minVal) minVal = val;
+    if (val > maxVal) maxVal = val;
+    sum += val;
+  }
+  int avg = sum / calibrationPeriod;  
+
+  // Set dry/wet thresholds based on sensitivity multiplier. MAIN BRAIN
+  dryThreshold = avg - (avg - minVal) * thresholdSensitivity;  // Don't overwater
+  wetThreshold = avg + (maxVal - avg) * thresholdSensitivity;  // Don't underwater
+
+  Serial.print("Dry Threshold: ");
+  Serial.println(dryThreshold);
+  Serial.print("Wet Threshold: ");
+  Serial.println(wetThreshold);
+}
+
+// adjusting period
+
+void adjustThresholds(int currentValue) {
+  // Simple adaptive threshold adjustment based on moisture readings.
+  if (currentValue < dryThreshold - adaptiveAdjustmentRange) {  
+    dryThreshold = (dryThreshold + currentValue) / 2;   
+    writeIntToEEPROM(0, dryThreshold);
+  } else if (currentValue > wetThreshold + adaptiveAdjustmentRange) { 
+    wetThreshold = (wetThreshold + currentValue) / 2;  
+    writeIntToEEPROM(2, wetThreshold);
+  }
+}
+
+//pump process
+
+void activatePump() {
+  Serial.println("Soil is dry. Pump ON");
+  digitalWrite(logicPin1, HIGH);  
+  digitalWrite(logicPin2, LOW);   
+  analogWrite(enablePin, 255);    
+
+  delay(wateringDuration);        
+
+  deactivatePump();              
+}
+
+void deactivatePump() {
+  digitalWrite(enablePin, LOW);  
+  digitalWrite(logicPin1, LOW);   
+  digitalWrite(logicPin2, LOW);
+  Serial.println("Pump OFF.");
+}
+
+void writeIntToEEPROM(int address, int value) {
+  EEPROM.write(address, value & 0xFF);          // convert ng unang 8 bits ng binary to the first line
+  EEPROM.write(address + 1, (value >> 8) & 0xFF); // convert ng last 8 bits ng binary to the last line
+}
+
+//converting data to decimal for alot of data collection
+
+int readIntFromEEPROM(int address) {
+  return EEPROM.read(address) | (EEPROM.read(address + 1) << 8);  // Read the bytes
+}
