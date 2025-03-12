@@ -1,140 +1,124 @@
-#include <EEPROM.h> 
+#include <EEPROM.h>
 
-// Define configurable values at the top
-const int moisturePin = A0;     
-const int enablePin = 9;        // Speed pin
-const int logicPin1 = 7;        // Logic pin 1, forward or reverse
-const int logicPin2 = 8;        // Logic pin 2, forward or reverse
+#define MOTOR_PWM 9  // Motor speed control
+#define MOTOR_IN1 7  // H-Bridge Input 1
+#define MOTOR_IN2 8  // H-Bridge Input 2
+#define MOISTURE_SENSOR 6 // Using digital pin for moisture sensor
+#define EEPROM_START_ADDR 0
+#define MOTOR_SPEED 255 // Medium speed (0-255)
+#define MAX_LOGS 26  // Store last 26 logs
+#define LOG_SIZE 32  // Increased size per log for clarity
+#define LOG_INDEX_ADDR (MAX_LOGS * LOG_SIZE) // Address to store the log index
 
-// Calibration and sensitivity settings
-const int calibrationPeriod = 100;         // Number of readings for initial calibration. 
-const int wateringDuration = 5000;        // How long the pump works
-const float thresholdSensitivity = 0.3;   // Sensitivity for dry/wet threshold (lower = more activity from the plant)
-const int adaptiveAdjustmentRange = 50;    // Change this if your plant has specific requirements
+#define SENSOR_READ_INTERVAL 7200000 // 2 hours in milliseconds
+#define SENSOR_ACTIVE_DURATION 30000 // Sensor stays active for 30 seconds
+#define MOISTURE_LOW 50  // Below this, pump turns ON
+#define MOISTURE_HIGH 70 // Above this, pump turns OFF
 
-// Parameters for dryness 
-int dryThreshold;       
-int wetThreshold;       
+unsigned long lastSensorActivationTime = 0;
+unsigned long lastPumpActivationTime = 0;
+int logIndex = 0;
 
-void setup() {   
-  pinMode(enablePin, OUTPUT); // Dont change this   
-  pinMode(logicPin1, OUTPUT);  
-  pinMode(logicPin2, OUTPUT);  
-  digitalWrite(enablePin, LOW);  
-  digitalWrite(logicPin1, LOW); 
-  digitalWrite(logicPin2, LOW);
-  Serial.begin(9600);
+void readEEPROMLogs(); // Function declaration to ensure logs are read before anything else
 
-  // Read stored thresholds from EEPROM. 
-  wetThreshold = readIntFromEEPROM(2);
-
-  // Perform calibration if EEPROM values are not set 
-  if (dryThreshold == 0xFFFF || wetThreshold == 0xFFFF) { 
-    Serial.println("Calibrating... Please wait.);
-    int calibrationReadings[calibrationPeriod];
-    for (int i = 0; i < calibrationPeriod; i++) {
-      calibrationReadings[i] = analogRead(moisturePin);  // Gather moisture data
-      delay(200);  
-    }
-    calculateInitialThresholds(calibrationReadings);
-    writeIntToEEPROM(0, dryThreshold);  // Saving data to EPROM
-    writeIntToEEPROM(2, wetThreshold);
-    Serial.println("Calibration complete and thresholds saved.");
-  } else {
-    Serial.println("Loaded thresholds from EEPROM.");
-  }
-
-  Serial.print("Dry Threshold: ");
-  Serial.println(dryThreshold);
-  Serial.print("Wet Threshold: ");
-  Serial.println(wetThreshold);
+void setup() {
+    Serial.begin(9600);
+    pinMode(MOTOR_PWM, OUTPUT);
+    pinMode(MOTOR_IN1, OUTPUT);
+    pinMode(MOTOR_IN2, OUTPUT);
+    pinMode(MOISTURE_SENSOR, INPUT);
+    
+    logIndex = EEPROM.read(LOG_INDEX_ADDR);
+    if (logIndex >= MAX_LOGS) logIndex = 0;
+    
+    readEEPROMLogs(); // Read stored logs before starting anything else
 }
-
-//Moisture sensor process
 
 void loop() {
-  int moistureValue = analogRead(moisturePin); // Read current moisture level.
-  Serial.print("Moisture Level: ");
-  Serial.println(moistureValue);
+    unsigned long currentMillis = millis();
 
-  // Trigger watering if below middle-ground value
-  int middleGroundValue = (dryThreshold + wetThreshold) / 2;
-  if (moistureValue < middleGroundValue) {
-    activatePump(); // Time to feed the plant
-  } else {
-    deactivatePump(); // No need for water
-  }
+    // Activate sensor every 2 hours for 30 seconds
+    if (currentMillis - lastSensorActivationTime >= SENSOR_READ_INTERVAL) {
+        lastSensorActivationTime = currentMillis;
+        delay(SENSOR_ACTIVE_DURATION);
+        int moistureState = digitalRead(MOISTURE_SENSOR); // 1 = dry, 0 = wet
 
-  // Optionally adjust thresholds over time. 
-  adjustThresholds(moistureValue);
+        Serial.print("Moisture Sensor State: ");
+        Serial.println(moistureState ? "DRY" : "WET");
 
-  delay(2000); //Dont delete this it will break
+        if (moistureState == HIGH) {
+            activatePump();  // Turn ON pump indefinitely if dry
+        } else {
+            deactivatePump(); // Ensure pump is off if moisture is sufficient
+        }
+
+        // Log to EEPROM
+        String pumpStatus = (moistureState == HIGH) ? "ON" : "OFF";
+        storeToEEPROM(moistureState, pumpStatus);
+    }
+
+    delay(1000); // Ensure real-time readings every second
 }
-
-void calculateInitialThresholds(int readings[]) {
-  int minVal = 1023; 
-  int maxVal = 0;     
-  int sum = 0;        
-
-  // Calculate min, max, and average values.
-  for (int i = 0; i < calibrationPeriod; i++) {
-    int val = readings[i];
-    if (val < minVal) minVal = val;
-    if (val > maxVal) maxVal = val;
-    sum += val;
-  }
-  int avg = sum / calibrationPeriod;  
-
-  // Set dry/wet thresholds based on sensitivity multiplier. MAIN BRAIN
-  dryThreshold = avg - (avg - minVal) * thresholdSensitivity;  // Don't overwater
-  wetThreshold = avg + (maxVal - avg) * thresholdSensitivity;  // Don't underwater
-
-  Serial.print("Dry Threshold: ");
-  Serial.println(dryThreshold);
-  Serial.print("Wet Threshold: ");
-  Serial.println(wetThreshold);
-}
-
-// adjusting period
-
-void adjustThresholds(int currentValue) {
-  // Simple adaptive threshold adjustment based on moisture readings.
-  if (currentValue < dryThreshold - adaptiveAdjustmentRange) {  
-    dryThreshold = (dryThreshold + currentValue) / 2;   
-    writeIntToEEPROM(0, dryThreshold);
-  } else if (currentValue > wetThreshold + adaptiveAdjustmentRange) { 
-    wetThreshold = (wetThreshold + currentValue) / 2;  
-    writeIntToEEPROM(2, wetThreshold);
-  }
-}
-
-//pump process
 
 void activatePump() {
-  Serial.println("Soil is dry. Pump ON");
-  digitalWrite(logicPin1, HIGH);  
-  digitalWrite(logicPin2, LOW);   
-  analogWrite(enablePin, 255);    
-
-  delay(wateringDuration);        
-
-  deactivatePump();              
+    analogWrite(MOTOR_PWM, MOTOR_SPEED);
+    digitalWrite(MOTOR_IN1, HIGH);
+    digitalWrite(MOTOR_IN2, LOW);
 }
 
 void deactivatePump() {
-  digitalWrite(enablePin, LOW);  
-  digitalWrite(logicPin1, LOW);   
-  digitalWrite(logicPin2, LOW);
-  Serial.println("Pump OFF.");
+    analogWrite(MOTOR_PWM, 0);
+    digitalWrite(MOTOR_IN1, LOW);
+    digitalWrite(MOTOR_IN2, LOW);
 }
 
-void writeIntToEEPROM(int address, int value) {
-  EEPROM.write(address, value & 0xFF);          // convert ng unang 8 bits ng binary to the first line
-  EEPROM.write(address + 1, (value >> 8) & 0xFF); // convert ng last 8 bits ng binary to the last line
+void storeToEEPROM(int moisture, String pumpStatus) {
+    unsigned long currentTime = millis() / 60000; // Store time in minutes since startup
+    String logEntry = String(currentTime) + " min - " + (moisture ? "DRY" : "WET") + " - " + pumpStatus;
+    
+    int startAddr = EEPROM_START_ADDR + (logIndex * LOG_SIZE);
+
+    // Clear previous data
+    for (int i = 0; i < LOG_SIZE; i++) {
+        EEPROM.write(startAddr + i, ' ');
+    }
+
+    for (int i = 0; i < logEntry.length() && i < LOG_SIZE - 1; i++) {
+        EEPROM.write(startAddr + i, logEntry[i]);
+    }
+    EEPROM.write(startAddr + LOG_SIZE - 1, '\0'); // Null terminator
+    
+    logIndex = (logIndex + 1) % MAX_LOGS; // Move to next log slot
+    EEPROM.write(LOG_INDEX_ADDR, logIndex); // Store log index in EEPROM
 }
 
-//converting data to decimal for alot of data collection
+void readEEPROMLogs() {
+    Serial.println("Reading stored logs...");
+    for (int i = 0; i < MAX_LOGS; i++) {
+        int startAddr = EEPROM_START_ADDR + (i * LOG_SIZE);
+        String logEntry = "";
+        bool isValid = false;
 
-int readIntFromEEPROM(int address) {
-  return EEPROM.read(address) | (EEPROM.read(address + 1) << 8);  // Read the bytes
+        for (int j = 0; j < LOG_SIZE; j++) {
+            char c = EEPROM.read(startAddr + j);
+            if (c == '\0' || c == 255) break;
+            if (c != ' ') isValid = true;
+            logEntry += c;
+        }
+
+        if (isValid) {
+            Serial.print("Log ");
+            Serial.print(i);
+            Serial.print(": ");
+            Serial.println(logEntry);
+        }
+    }
+}
+
+void clearEEPROM() {
+    for (int i = 0; i < MAX_LOGS * LOG_SIZE; i++) {
+        EEPROM.write(EEPROM_START_ADDR + i, 255);
+    }
+    EEPROM.write(LOG_INDEX_ADDR, 0);
+    logIndex = 0;
 }
