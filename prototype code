@@ -1,0 +1,49 @@
+#define MOTOR_PWM 9  // Motor speed control
+#define MOTOR_IN1 7  // H-Bridge Input 1
+#define MOTOR_IN2 8  // H-Bridge Input 2
+#define MOISTURE_SENSOR A0 // Using analog pin for moisture sensor
+
+#define MOTOR_SPEED 255 // Maximum speed (0-255)
+#define MOISTURE_LOW 50  // Below this, pump turns ON
+#define MOISTURE_HIGH 70 // Above this, pump turns OFF
+
+void setup() {
+    Serial.begin(9600);
+    pinMode(MOTOR_PWM, OUTPUT);
+    pinMode(MOTOR_IN1, OUTPUT);
+    pinMode(MOTOR_IN2, OUTPUT);
+    pinMode(MOISTURE_SENSOR, INPUT);
+}
+
+void loop() {
+    int moistureValue = analogRead(MOISTURE_SENSOR);
+    int moisturePercentage = map(moistureValue, 1023, 0, 0, 100); // Convert to percentage
+    
+    Serial.print("Moisture Level: ");
+    Serial.print(moisturePercentage);
+    Serial.print("% - ");
+    
+    if (moisturePercentage < MOISTURE_LOW) {
+        activatePump();
+        Serial.println("DRY - Pump ON");
+    } else if (moisturePercentage > MOISTURE_HIGH) {
+        deactivatePump();
+        Serial.println("WET - Pump OFF");
+    } else {
+        Serial.println("OPTIMAL - Pump OFF");
+    }
+    
+    delay(1000); // Read every second
+}
+
+void activatePump() {
+    analogWrite(MOTOR_PWM, MOTOR_SPEED);
+    digitalWrite(MOTOR_IN1, HIGH);
+    digitalWrite(MOTOR_IN2, LOW);
+}
+
+void deactivatePump() {
+    analogWrite(MOTOR_PWM, 0);
+    digitalWrite(MOTOR_IN1, LOW);
+    digitalWrite(MOTOR_IN2, LOW);
+}
